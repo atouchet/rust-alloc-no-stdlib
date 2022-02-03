@@ -1,6 +1,6 @@
 # Framework for allocating memory in #![no_std] modules.
 
-[![crates.io](http://meritbadge.herokuapp.com/alloc-no-stdlib)](https://crates.io/crates/alloc-no-stdlib)
+[![crates.io](https://img.shields.io/crates/v/alloc-no-stdlib.svg)](https://crates.io/crates/alloc-no-stdlib)
 [![Build Status](https://travis-ci.org/dropbox/rust-alloc-no-stdlib.svg?branch=master)](https://travis-ci.org/dropbox/rust-alloc-no-stdlib)
 
 
@@ -9,9 +9,7 @@
 
 ## Documentation
 Currently there is no standard way to allocate memory from within a module that is no_std.
-This provides a mechanism to allocate memory using the stdlib-independent
-memory allocation system described by rust-alloc-no-stdlib
-describe a memory allocation that can be satisfied entirely on
+This provides a mechanism to describe a memory allocation that can be satisfied entirely on
 the stack, by unsafely linking to calloc, or by unsafely referencing a mutable global variable.
 This library currently will leak memory if free_cell isn't specifically invoked on memory.
 
@@ -24,35 +22,46 @@ using seccomp to disallow future syscalls.
 
 ## Usage
 
-There are 3 modes for allocating memory using the stdlib, each with advantages and disadvantages
+There are 3 modes for allocating memory, each with advantages and disadvantages
 
+### On the stack
+This is possible without the stdlib at all
+However, this eats into the natural ulimit on the stack depth and generally
+limits the program to only a few megs of dynamically allocated data
 
-### On the heap
-This uses the standard Box facilities to allocate memory and assumeds a default constructor
-for the given type
+Example:
 
 ```rust
-let mut halloc = StandardAlloc::new(0);
-for _i in 1..10 { // heap test
-    let mut x = <StandardAlloc as Allocator<u8>>::alloc_cell(&mut halloc, 100000)
-    x[0] = 4;
-    let mut y = <StandardAlloc as Allocator<u8>>::alloc_cell(&mut halloc, 100000)
+// First define a struct to hold all the array on the stack.
+declare_stack_allocator_struct!(StackAllocatedFreelist4, 4, stack);
+// since generics cannot be used, the actual struct to hold the memory must be defined with a macro
+...
+
+// in the code where the memory must be used, first the array needs to be readied
+let mut stack_buffer = define_allocator_memory_pool!(4, u8, [0; 65536], stack);
+// then an allocator needs to be made and pointed to the stack_buffer on the stack
+// the final argument tells the system if free'd data should be zero'd before being
+// reused by a subsequent call to alloc_cell
+let mut ags = StackAllocatedFreelist4::<u8>::new_allocator(&mut stack_buffer, bzero);
+{
+    // now we can get memory dynamically
+    let mut x = ags.alloc_cell(9999);
+    x.slice_mut()[0] = 4;
+    // get more memory
+    let mut y = ags.alloc_cell(4);
     y[0] = 5;
-    let mut z = <StandardAlloc as Allocator<u8>>::alloc_cell(&mut halloc, 100000)
-    z[0] = 6;
-    assert_eq!(y[0], 5);
-    halloc.free_cell(y);
+    // and free it, consuming the buffer
+    ags.free_cell(y);
+
+    //y.mem[0] = 6; // <-- this is an error: won't compile (use after free)
     assert_eq!(x[0], 4);
-    assert_eq!(x[9], 0);
-    assert_eq!(z[0], 6);
-}
 ```
 
 ### On the heap
-This uses the standard Box facilities to allocate memory but assuming a default user-provided value
+This uses the standard Box facilities to allocate memory
 
 ```rust
-let mut halloc = HeapAlloc::<u8>::new(8);
+let mut halloc = HeapAlloc::<u8>::new(0);
 for _i in 1..10 { // heap test
     let mut x = halloc.alloc_cell(100000);
     x[0] = 4;
@@ -63,11 +72,10 @@ for _i in 1..10 { // heap test
     assert_eq!(y[0], 5);
     halloc.free_cell(y);
     assert_eq!(x[0], 4);
-    assert_eq!(x[9], 8);
+    assert_eq!(x[9], 0);
     assert_eq!(z[0], 6);
 }
 ```
-
 
 ### On the heap, but uninitialized
 This does allocate data every time it is requested, but it does not allocate the
